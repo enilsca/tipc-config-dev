@@ -47,13 +47,14 @@
 #include <linux/tipc_config.h>
 #include <linux/genetlink.h>
 #include <linux/version.h>
-
+#include <ifaddrs.h>
 /* typedefs */
 
 typedef void (*VOIDFUNCPTR) ();
 
 /* constants */
 
+#define MEDIA_NAME_UDP	"udp:"
 #define MAX_COMMANDS 8
 #define MAX_TLVS_SPACE 33000		/* must be a multiple of 4 bytes */
 
@@ -1121,6 +1122,56 @@ static void set_linkset_window(char *args)
 	set_linkset_value(args, "window", TIPC_CMD_SET_LINK_WINDOW);
 }
 
+static int get_local_address(char *arg)
+{
+	char *delim;
+	struct ifaddrs *ifap, *ifa;
+	int i;
+	struct sockaddr_in *addr = NULL;
+	char ifaddr[16];
+	char tmp[TIPC_MAX_BEARER_NAME];
+
+	if (strncmp(arg, MEDIA_NAME_UDP, sizeof(MEDIA_NAME_UDP)-1) != 0){
+		return 0;
+	}
+	memcpy(tmp, arg, TIPC_MAX_BEARER_NAME);
+
+	delim = strtok(arg + sizeof(MEDIA_NAME_UDP)-1, ":");
+	/*If an IP address was specified, use it directly*/
+	if (inet_pton(AF_INET, delim, &addr))
+		return 0;
+
+	if (getifaddrs(&ifap)) {
+		perror("getifaddrs");
+		return -EINVAL;
+	}
+	/*Get the interface address*/
+	for(ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+		if ((ifa->ifa_addr->sa_family == AF_INET) &&
+		   (strcmp(ifa->ifa_name, delim) == 0)) {
+			addr = ifa->ifa_addr;
+			break;
+		}
+	}
+	if (!addr) {
+		freeifaddrs(ifap);
+		return -ENODEV;
+	}
+	if (NULL==inet_ntop(AF_INET, &addr->sin_addr, ifaddr,
+	    sizeof(struct sockaddr_in))) {
+		freeifaddrs(ifap);
+		perror("ntop");
+		return -EINVAL;
+	}
+	if (delim = strchr(tmp+sizeof(MEDIA_NAME_UDP), ':')) {
+		sprintf(arg, "%s%s%s\0", MEDIA_NAME_UDP,ifaddr, delim);
+		goto done;
+	}
+	sprintf(arg, "%s%s\0", MEDIA_NAME_UDP,ifaddr);
+done:
+	freeifaddrs(ifap);
+	return 0;
+}
 
 static void enable_bearer(char *args)
 {
@@ -1128,6 +1179,7 @@ static void enable_bearer(char *args)
 	int tlv_space;
 	char *a;
 	char dummy;
+	int err;
 
 	while (args) {
 		__u32 domain = dest & 0xfffff000; /* defaults to own cluster */
@@ -1146,7 +1198,6 @@ static void enable_bearer(char *args)
 			if (*domain_str != 0)
 				domain = str2addr(domain_str);
 		}
-
 		confirm("Enable bearer <%s>%s with detection domain %s and "
 			"priority %u? [Y/n]",
 			a, for_dest(), addr2str(domain), pri);
@@ -1157,6 +1208,8 @@ static void enable_bearer(char *args)
 #else
 		req_tlv.disc_domain = htonl(domain);
 #endif
+		if (err = get_local_address(a) != 0)
+			fatal("Invalid bearer parameters (%d)\n",err);
 		strncpy(req_tlv.name, a, TIPC_MAX_BEARER_NAME - 1);
 		req_tlv.name[TIPC_MAX_BEARER_NAME - 1] = '\0';
 
