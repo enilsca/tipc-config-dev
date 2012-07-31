@@ -48,6 +48,7 @@
 #include <linux/genetlink.h>
 #include <linux/version.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 /* typedefs */
 
 typedef void (*VOIDFUNCPTR) ();
@@ -1173,6 +1174,44 @@ done:
 	return 0;
 }
 
+static int resolve_bearer_endpoint(char *arg)
+{
+	char tmp[TIPC_MAX_BEARER_NAME];
+	char raddr[16];
+	char *delim;
+	struct sockaddr_in si_remote;
+	struct addrinfo hints = {0};
+	struct addrinfo *remote_info;
+	int i;
+
+	memcpy(tmp, arg, TIPC_MAX_BEARER_NAME);
+	/*Get the fourth token (remote address)*/
+	delim = strtok(arg, ":");
+	for (i = 0; i < 3; i++)
+		delim = strtok(NULL, ":");
+	if (!delim)
+		return 0;
+	if (inet_pton(AF_INET, delim, &si_remote.sin_addr))
+		return 0;
+	hints.ai_family = AF_INET;
+	if (getaddrinfo(delim, NULL, &hints, &remote_info) != 0)
+		return -EINVAL;
+	/*Multiple addresses may be returned, but we just use the first one*/
+	inet_ntop(AF_INET, &((struct sockaddr_in*)remote_info->ai_addr)->sin_addr,
+		  raddr, 255);
+	delim = tmp;
+	for (i = 0; i < 3; i++)
+		delim = strchr(delim, ':')+1;
+	i = delim - tmp;
+	delim = strchr(delim,':');
+	snprintf(arg, i, tmp);
+	if (delim)
+		sprintf(arg + i - 1, ":%s%s",raddr,delim);
+	else
+		sprintf(arg + i - 1,":%s",raddr);
+	return 0;
+}
+
 static void enable_bearer(char *args)
 {
 	struct tipc_bearer_config req_tlv;
@@ -1210,6 +1249,9 @@ static void enable_bearer(char *args)
 #endif
 		if (err = get_local_address(a) != 0)
 			fatal("Invalid bearer parameters (%d)\n",err);
+		if (err = resolve_bearer_endpoint(a) != 0) {
+			fatal("Could not resolve remote bearer endpoint name (%d)\n", err);
+		}
 		strncpy(req_tlv.name, a, TIPC_MAX_BEARER_NAME - 1);
 		req_tlv.name[TIPC_MAX_BEARER_NAME - 1] = '\0';
 
@@ -1226,12 +1268,15 @@ static void disable_bearer(char *bname)
 {
 	char bearer_name[TIPC_MAX_BEARER_NAME];
 	int tlv_space;
+	int err;
 
 	strncpy(bearer_name, bname, TIPC_MAX_BEARER_NAME - 1);
 	bearer_name[TIPC_MAX_BEARER_NAME - 1] = '\0';
 
 	confirm("Disable bearer <%s>%s ? [Y/n]", bearer_name, for_dest());
 
+	if (err = get_local_address(bearer_name) != 0)
+		fatal("Invalid bearer parameters (%d)\n",err);
 	tlv_space = TLV_SET(tlv_area, TIPC_TLV_BEARER_NAME, 
 			    bearer_name, sizeof(bearer_name));
 	tlv_space = do_command(TIPC_CMD_DISABLE_BEARER, tlv_area, tlv_space,
